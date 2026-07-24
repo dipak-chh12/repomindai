@@ -27,6 +27,24 @@ export const apiService = {
     return res.json();
   },
 
+  async summarizeRepo(repoUrl: string): Promise<{
+    summary: string;
+    tech_stack: Record<string, string[]>;
+    architecture: Array<{ name: string; confidence: number; reasoning: string }>;
+    request_flow: Array<{ step: string; layer: string; description: string }>;
+    folder_explanations: Array<{ path: string; explanation: string }>;
+    important_components: Array<{ category: string; file_path: string; lines: string; explanation: string }>;
+    ai_insights: Record<string, string[]>;
+  }> {
+    const res = await fetch(`${API_BASE}/summarize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_url: repoUrl })
+    });
+    if (!res.ok) throw new Error('AI summary generation failed');
+    return res.json();
+  },
+
   async getRepositoryReport(): Promise<RepositoryReport> {
     const res = await fetch(`${API_BASE}/repository`);
     if (!res.ok) throw new Error('No analyzed repository report found');

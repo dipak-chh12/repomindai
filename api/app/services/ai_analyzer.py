@@ -106,6 +106,18 @@ class AIAnalyzer:
         parse_results: Dict[str, Any],
         chunks: List[Any]
     ) -> Dict[str, Any]:
+        """Full analysis with AI — use only when you have time budget."""
+        return self.analyze_repository_fast(repo_info, parse_results, chunks)
+
+    def analyze_repository_fast(
+        self,
+        repo_info: Dict[str, Any],
+        parse_results: Dict[str, Any],
+        chunks: List[Any]
+    ) -> Dict[str, Any]:
+        """Fast analysis using only static/heuristic analysis — no AI call.
+        Returns immediately so the frontend can display basic data quickly.
+        AI summary is fetched separately via /summarize."""
         full_name = repo_info["full_name"]
         file_tree = repo_info.get("file_tree", [])
         total_loc = repo_info.get("total_loc", 0)
@@ -116,23 +128,8 @@ class AIAnalyzer:
         primary_lang = max(languages.items(), key=lambda x: x[1])[0] if languages else "Python"
         primary_lang = primary_lang.capitalize()
 
-        code_context = self._extract_code_context(target_dir, file_tree, chunks)
         readme_summary = self._extract_readme_summary(target_dir)
-
-        chunk_previews = []
-        for c in chunks[:15]:
-            chunk_previews.append(f"- {c.file_path} | {c.chunk_type} | {c.function_name or c.class_name or 'Section'} (L{c.start_line}-L{c.end_line})")
-
-        # SINGLE combined AI call — summary + structured JSON in one shot
-        ai_result = self._generate_full_analysis(
-            full_name=full_name,
-            primary_lang=primary_lang,
-            file_tree=file_tree,
-            code_context=code_context,
-            chunk_previews=chunk_previews,
-            total_loc=total_loc,
-            languages=languages
-        )
+        fallback = self._build_dynamic_fallback(file_tree, chunks, primary_lang, languages, full_name, total_loc)
 
         return {
             "overview": {
@@ -140,19 +137,19 @@ class AIAnalyzer:
                 "owner": repo_info["owner"],
                 "full_name": full_name,
                 "primary_language": primary_lang,
-                "framework": ai_result["tech_stack"].get("frameworks", ["Custom Application"])[0] if ai_result["tech_stack"].get("frameworks") else "Custom Application",
+                "framework": fallback["tech_stack"].get("frameworks", ["Custom Application"])[0] if fallback["tech_stack"].get("frameworks") else "Custom Application",
                 "total_files": total_files,
                 "indexed_files": parse_results["stats"]["files_indexed"],
                 "lines_of_code": total_loc,
                 "readme_summary": readme_summary,
-                "ai_summary": ai_result["summary"]
+                "ai_summary": f"## {full_name}\n\nAnalyzing... AI summary is loading separately."
             },
-            "architecture": ai_result["architecture"],
-            "tech_stack": ai_result["tech_stack"],
-            "folder_explanations": ai_result["folder_explanations"],
-            "important_components": ai_result["important_components"],
-            "request_flow": ai_result["request_flow"],
-            "ai_insights": ai_result["ai_insights"],
+            "architecture": fallback["architecture"],
+            "tech_stack": fallback["tech_stack"],
+            "folder_explanations": fallback["folder_explanations"],
+            "important_components": fallback["important_components"],
+            "request_flow": fallback["request_flow"],
+            "ai_insights": fallback["ai_insights"],
             "code_statistics": {
                 "files_indexed": parse_results["stats"]["files_indexed"],
                 "chunks_created": len(chunks),
@@ -164,6 +161,40 @@ class AIAnalyzer:
                 "retrieval_time_ms": 1.4
             }
         }
+
+    def generate_ai_summary(
+        self,
+        repo_info: Dict[str, Any],
+        parse_results: Dict[str, Any],
+        chunks: List[Any]
+    ) -> Dict[str, Any]:
+        """AI-only analysis — runs in its own Lambda invocation with full 60s budget.
+        Returns the AI-generated summary and structured analysis."""
+        full_name = repo_info["full_name"]
+        file_tree = repo_info.get("file_tree", [])
+        total_loc = repo_info.get("total_loc", 0)
+        target_dir = repo_info.get("target_dir", "")
+
+        languages = parse_results["stats"].get("languages", {})
+        primary_lang = max(languages.items(), key=lambda x: x[1])[0] if languages else "Python"
+        primary_lang = primary_lang.capitalize()
+
+        code_context = self._extract_code_context(target_dir, file_tree, chunks)
+
+        chunk_previews = []
+        for c in chunks[:15]:
+            chunk_previews.append(f"- {c.file_path} | {c.chunk_type} | {c.function_name or c.class_name or 'Section'} (L{c.start_line}-L{c.end_line})")
+
+        result = self._generate_full_analysis(
+            full_name=full_name,
+            primary_lang=primary_lang,
+            file_tree=file_tree,
+            code_context=code_context,
+            chunk_previews=chunk_previews,
+            total_loc=total_loc,
+            languages=languages
+        )
+        return result
 
     def _extract_readme_summary(self, target_dir: str) -> str:
         for fname in ["README.md", "readme.md", "README.rst", "README"]:

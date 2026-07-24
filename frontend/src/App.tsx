@@ -66,6 +66,25 @@ export function App() {
         setProgress(100);
         setStage('Analysis Complete!');
         setTimeout(() => setView('dashboard'), 800);
+
+        // Fire AI summary as a background call — it runs in its own Lambda with full time budget
+        apiService.summarizeRepo(url).then((aiData) => {
+          setReport((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              overview: { ...prev.overview, ai_summary: aiData.summary },
+              architecture: aiData.architecture ?? prev.architecture,
+              tech_stack: aiData.tech_stack ?? prev.tech_stack,
+              folder_explanations: aiData.folder_explanations ?? prev.folder_explanations,
+              important_components: aiData.important_components ?? prev.important_components,
+              request_flow: aiData.request_flow ?? prev.request_flow,
+              ai_insights: aiData.ai_insights ?? prev.ai_insights,
+            };
+          });
+        }).catch(() => {
+          // Summary failed silently — basic data still shown
+        });
       } else {
         throw new Error('Backend returned no report.');
       }

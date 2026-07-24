@@ -59,11 +59,20 @@ def _ensure_state(repo_url: str):
     _store["chat_service"] = chat_svc
 
 
+class SummarizeRequest(BaseModel):
+    repo_url: str
+    file_tree: list
+    primary_lang: str
+    total_loc: int
+    target_dir: str = ""
+    full_name: str = ""
+
+
 @router.post("/analyze")
 def analyze_repository(req: AnalyzeRequest):
     """
     Synchronously runs the full analysis pipeline and returns the report.
-    Also indexes the repo for chat/search use within this Lambda invocation.
+    AI summary is generated separately via /summarize to stay within timeout.
     """
     repo_url = req.repo_url.strip()
     if not repo_url:
@@ -80,8 +89,9 @@ def analyze_repository(req: AnalyzeRequest):
         vec_service = VectorService(dimension=256)
         vec_service.index_chunks(chunks)
 
+        # Generate report WITHOUT AI summary (fast path, stays within timeout)
         analyzer = AIAnalyzer()
-        report = analyzer.analyze_repository(git_info, parse_results, chunks)
+        report = analyzer.analyze_repository_fast(git_info, parse_results, chunks)
 
         chat_svc = ChatService(vector_service=vec_service)
 
@@ -103,6 +113,31 @@ def analyze_repository(req: AnalyzeRequest):
         import traceback
         detail = f"{str(e)}\n{traceback.format_exc()}"
         raise HTTPException(status_code=500, detail=detail)
+
+
+@router.post("/summarize")
+def generate_ai_summary(req: AnalyzeRequest):
+    """
+    Separate endpoint that generates the AI summary for a repo_url.
+    Called by the frontend AFTER /analyze returns, as a second async fetch.
+    This runs in its own Lambda invocation with the full 60s budget.
+    """
+    repo_url = req.repo_url.strip()
+    if not repo_url:
+        raise HTTPException(status_code=400, detail="Repository URL is required.")
+
+    task_id = str(uuid.uuid4())[:8]
+    target_dir = os.path.join(TEMP_REPOS_DIR, task_id)
+
+    try:
+        git_info = GitService.clone_repository(repo_url, target_dir)
+        parse_results = CodeParser.parse_repository(target_dir, git_info["repo_name"])
+        chunks = parse_results["chunks"]
+        analyzer = AIAnalyzer()
+        return analyzer.generate_ai_summary(git_info, parse_results, chunks)
+    except Exception as e:
+        import traceback
+        raise HTTPException(status_code=500, detail=f"{str(e)}\n{traceback.format_exc()}")
 
 
 @router.get("/status/{task_id}")
