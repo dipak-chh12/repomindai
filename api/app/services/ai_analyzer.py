@@ -5,6 +5,7 @@ import httpx
 from typing import Dict, Any, List, Optional
 from app.config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, PRIMARY_MODEL, FALLBACK_MODEL
 
+
 class AIAnalyzer:
     def __init__(self, api_key: str = OPENROUTER_API_KEY):
         self.api_key = api_key
@@ -19,7 +20,7 @@ class AIAnalyzer:
             "X-Title": "RepoMind AI",
             "Content-Type": "application/json"
         }
-        
+
         payload = {
             "model": PRIMARY_MODEL,
             "messages": [
@@ -37,29 +38,34 @@ class AIAnalyzer:
                     data = res.json()
                     return data["choices"][0]["message"]["content"]
                 else:
+                    print(f"Primary model failed ({res.status_code}): {res.text[:200]}")
                     payload["model"] = FALLBACK_MODEL
                     res2 = client.post(f"{OPENROUTER_BASE_URL}/chat/completions", headers=headers, json=payload)
                     if res2.status_code == 200:
                         return res2.json()["choices"][0]["message"]["content"]
+                    else:
+                        print(f"Fallback model failed ({res2.status_code}): {res2.text[:200]}")
         except Exception as e:
             print(f"OpenRouter API call exception: {e}")
-            
+
         return ""
 
     def _extract_code_context(self, target_dir: str, file_tree: List[str], chunks: List[Any]) -> str:
         context_snippets = []
-        
+
+        # Read README first
         for readme_name in ["README.md", "readme.md", "README.rst", "README"]:
             readme_path = os.path.join(target_dir, readme_name)
             if os.path.exists(readme_path):
                 try:
                     with open(readme_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        content = f.read(3000)
+                        content = f.read(2000)
                         context_snippets.append(f"=== PROJECT README ({readme_name}) ===\n{content}\n")
                         break
                 except Exception:
                     pass
 
+        # Select key source files
         priority_files = []
         for f in file_tree:
             fname = os.path.basename(f).lower()
@@ -70,12 +76,12 @@ class AIAnalyzer:
             elif any(k in f.lower() for k in ['router', 'controller', 'service', 'model', 'api', 'config']):
                 priority_files.append(f)
 
-        selected_files = priority_files[:12]
-        if len(selected_files) < 12:
+        selected_files = priority_files[:8]
+        if len(selected_files) < 8:
             for f in file_tree:
                 if f not in selected_files and not f.startswith(('tests', 'docs', '.')) and any(f.endswith(ext) for ext in ['.py', '.ts', '.tsx', '.js', '.jsx', '.go', '.rs', '.java']):
                     selected_files.append(f)
-                    if len(selected_files) >= 12:
+                    if len(selected_files) >= 8:
                         break
 
         total_chars = 0
@@ -84,10 +90,10 @@ class AIAnalyzer:
             if os.path.exists(full_path):
                 try:
                     with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        code = f.read(1500)
+                        code = f.read(1000)
                         context_snippets.append(f"--- File: {rel_path} ---\n{code}\n")
                         total_chars += len(code)
-                        if total_chars > 12000:
+                        if total_chars > 6000:
                             break
                 except Exception:
                     pass
@@ -105,7 +111,7 @@ class AIAnalyzer:
         total_loc = repo_info.get("total_loc", 0)
         total_files = repo_info.get("total_files", 0)
         target_dir = repo_info.get("target_dir", "")
-        
+
         languages = parse_results["stats"].get("languages", {})
         primary_lang = max(languages.items(), key=lambda x: x[1])[0] if languages else "Python"
         primary_lang = primary_lang.capitalize()
@@ -113,8 +119,20 @@ class AIAnalyzer:
         code_context = self._extract_code_context(target_dir, file_tree, chunks)
         readme_summary = self._extract_readme_summary(target_dir)
 
-        repo_summary = self._generate_repo_summary(full_name, primary_lang, file_tree, code_context, total_loc)
-        structured_data = self._generate_structured_analysis(full_name, primary_lang, file_tree, code_context, chunks, languages)
+        chunk_previews = []
+        for c in chunks[:15]:
+            chunk_previews.append(f"- {c.file_path} | {c.chunk_type} | {c.function_name or c.class_name or 'Section'} (L{c.start_line}-L{c.end_line})")
+
+        # SINGLE combined AI call — summary + structured JSON in one shot
+        ai_result = self._generate_full_analysis(
+            full_name=full_name,
+            primary_lang=primary_lang,
+            file_tree=file_tree,
+            code_context=code_context,
+            chunk_previews=chunk_previews,
+            total_loc=total_loc,
+            languages=languages
+        )
 
         return {
             "overview": {
@@ -122,19 +140,19 @@ class AIAnalyzer:
                 "owner": repo_info["owner"],
                 "full_name": full_name,
                 "primary_language": primary_lang,
-                "framework": structured_data["tech_stack"].get("frameworks", ["Custom Application"])[0] if structured_data["tech_stack"].get("frameworks") else "Custom Application",
+                "framework": ai_result["tech_stack"].get("frameworks", ["Custom Application"])[0] if ai_result["tech_stack"].get("frameworks") else "Custom Application",
                 "total_files": total_files,
                 "indexed_files": parse_results["stats"]["files_indexed"],
                 "lines_of_code": total_loc,
                 "readme_summary": readme_summary,
-                "ai_summary": repo_summary
+                "ai_summary": ai_result["summary"]
             },
-            "architecture": structured_data["architecture"],
-            "tech_stack": structured_data["tech_stack"],
-            "folder_explanations": structured_data["folder_explanations"],
-            "important_components": structured_data["important_components"],
-            "request_flow": structured_data["request_flow"],
-            "ai_insights": structured_data["ai_insights"],
+            "architecture": ai_result["architecture"],
+            "tech_stack": ai_result["tech_stack"],
+            "folder_explanations": ai_result["folder_explanations"],
+            "important_components": ai_result["important_components"],
+            "request_flow": ai_result["request_flow"],
+            "ai_insights": ai_result["ai_insights"],
             "code_statistics": {
                 "files_indexed": parse_results["stats"]["files_indexed"],
                 "chunks_created": len(chunks),
@@ -159,66 +177,44 @@ class AIAnalyzer:
                     pass
         return "No README file found in repository root."
 
-    def _generate_repo_summary(self, full_name: str, primary_lang: str, file_tree: List[str], code_context: str, total_loc: int) -> str:
-        prompt = f"""You are a Staff Software Engineer analyzing the GitHub repository: '{full_name}'.
-Primary Language: {primary_lang}
-Total Lines of Code: {total_loc}
-
-Here is the real source code context and files from the project:
-{code_context[:8000]}
-
-File Structure Preview:
-{chr(10).join(file_tree[:30])}
-
-INSTRUCTIONS:
-Provide a deep, thorough, and highly accurate technical summary of this repository in simple, professional Markdown.
-Explain:
-1. **Core Purpose**: What this project actually does, what problem it solves, and its real-world function.
-2. **Architecture & Frameworks**: How the codebase is organized, what main frameworks/libraries it uses, and how components interact.
-3. **Data & Execution Flow**: How data enters the application, passes through services/handlers, and gets processed or stored.
-4. **Key Technical Highlights**: Notable implementation details, patterns, or tools used.
-
-Format your answer with clear Markdown headers (##) and bullet points. Be specific about THIS codebase; do NOT output generic template text!"""
-
-        ai_res = self._call_openrouter(prompt)
-        if ai_res and len(ai_res) > 100:
-            return ai_res
-
-        return f"## Repository Summary: {full_name}\n\nThis is a {primary_lang} codebase with {total_loc} lines of code. It contains {len(file_tree)} files structured for modular execution."
-
-    def _generate_structured_analysis(
+    def _generate_full_analysis(
         self,
         full_name: str,
         primary_lang: str,
         file_tree: List[str],
         code_context: str,
-        chunks: List[Any],
+        chunk_previews: List[str],
+        total_loc: int,
         languages: Dict[str, int]
     ) -> Dict[str, Any]:
-        chunk_previews = []
-        for c in chunks[:20]:
-            chunk_previews.append(f"- File: {c.file_path} | Type: {c.chunk_type} | Name: {c.function_name or c.class_name or 'Section'} (L{c.start_line}-L{c.end_line})")
+        """Single combined AI call returning summary + full structured analysis JSON."""
 
-        prompt = f"""Analyze the repository '{full_name}' ({primary_lang}) and return a JSON object with deep analysis.
+        file_tree_preview = chr(10).join(file_tree[:25])
+        chunk_list = chr(10).join(chunk_previews)
 
-REAL CODE CONTEXT:
-{code_context[:7000]}
+        prompt = f"""Analyze the GitHub repository '{full_name}' and return ONLY a single valid JSON object.
+
+REAL CODE CONTEXT (from actual source files):
+{code_context}
 
 FILE TREE:
-{chr(10).join(file_tree[:40])}
+{file_tree_preview}
 
 CODE CHUNKS DETECTED:
-{chr(10).join(chunk_previews)}
+{chunk_list}
 
-Return strictly a single valid JSON object with EXACTLY this structure:
+STATS: Primary Language: {primary_lang} | Total LOC: {total_loc} | Total Files: {len(file_tree)}
+
+Return ONLY this JSON structure (no markdown, no code fences, raw JSON only):
 {{
+  "summary": "A 3-5 paragraph detailed Markdown technical summary explaining what this repo does, its architecture, frameworks used, and execution flow. Use ## headers and bullet points. Be specific to THIS codebase.",
   "tech_stack": {{
-    "backend": ["list of backend languages/tools"],
-    "frontend": ["list of frontend frameworks/tools"],
-    "database": ["list of databases/ORMs"],
-    "frameworks": ["list of main frameworks"],
-    "libraries": ["list of key helper libraries"],
-    "testing": ["list of testing tools"],
+    "backend": ["backend languages/tools"],
+    "frontend": ["frontend frameworks/tools"],
+    "database": ["databases/ORMs"],
+    "frameworks": ["main frameworks"],
+    "libraries": ["key helper libraries"],
+    "testing": ["testing tools"],
     "devops": ["docker/ci-cd if present"],
     "ai_libraries": ["ai/ml libraries if present"],
     "package_managers": ["package managers"],
@@ -228,58 +224,42 @@ Return strictly a single valid JSON object with EXACTLY this structure:
     {{
       "name": "Design Pattern Name",
       "confidence": 90,
-      "reasoning": "Detailed explanation mentioning real file names in this project"
+      "reasoning": "Specific reasoning mentioning real file names from this project"
     }}
   ],
   "request_flow": [
-    {{
-      "step": "1. Entry Point",
-      "layer": "Client/API",
-      "description": "How a request enters this exact project"
-    }},
-    {{
-      "step": "2. Processing Layer",
-      "layer": "Service/Controller",
-      "description": "How data is processed"
-    }},
-    {{
-      "step": "3. Storage/Output",
-      "layer": "Database/Response",
-      "description": "How results are returned"
-    }}
+    {{"step": "1. Entry Point", "layer": "Client/API", "description": "How a request enters this exact project"}},
+    {{"step": "2. Processing", "layer": "Service/Controller", "description": "How data is processed"}},
+    {{"step": "3. Response", "layer": "Database/Response", "description": "How results are returned"}}
   ],
   "folder_explanations": [
-    {{
-      "path": "folder_path",
-      "explanation": "Specific purpose of this folder in this exact project"
-    }}
+    {{"path": "folder_name", "explanation": "Specific purpose in this project"}}
   ],
   "important_components": [
-    {{
-      "category": "Core Logic / Router / Auth / Model",
-      "file_path": "real_file_path.py",
-      "lines": "L1 - L45",
-      "explanation": "Description of what this component does"
-    }}
+    {{"category": "Core Logic / Router / Auth / Model", "file_path": "real_file.py", "lines": "L1 - L50", "explanation": "What this component does"}}
   ],
   "ai_insights": {{
-    "strengths": ["Real technical strength 1", "Real technical strength 2"],
-    "potential_code_smells": ["Actual smell or area to refactor"],
-    "duplicate_logic": ["Observation about code duplication"],
-    "large_classes": ["Files or components that are large"],
-    "missing_documentation": ["Documentation gaps"],
-    "todo_comments": ["Known or inferred TODOs"],
-    "suggested_improvements": ["Concrete architectural improvements"]
+    "strengths": ["Specific strength 1", "Specific strength 2"],
+    "potential_code_smells": ["Observed issue 1"],
+    "duplicate_logic": ["Duplication observation"],
+    "large_classes": ["Large file/class observation"],
+    "missing_documentation": ["Documentation gap"],
+    "todo_comments": ["Known or inferred TODO"],
+    "suggested_improvements": ["Concrete improvement suggestion"]
   }}
 }}"""
 
-        ai_raw = self._call_openrouter(prompt, system_prompt="You are a JSON-generating Staff Software Engineer. Output ONLY raw valid JSON.")
-        
+        ai_raw = self._call_openrouter(
+            prompt,
+            system_prompt="You are a JSON-generating Staff Software Engineer. Output ONLY raw valid JSON with no markdown formatting or code fences."
+        )
+
         parsed = self._safe_parse_json(ai_raw)
-        if parsed and "tech_stack" in parsed and "architecture" in parsed:
+        if parsed and "summary" in parsed and "tech_stack" in parsed:
             return parsed
 
-        return self._build_dynamic_fallback(file_tree, chunks, primary_lang, languages)
+        # Fallback if AI call failed
+        return self._build_dynamic_fallback(file_tree, [], primary_lang, languages, full_name, total_loc)
 
     def _safe_parse_json(self, raw_str: str) -> Optional[Dict[str, Any]]:
         if not raw_str:
@@ -292,6 +272,13 @@ Return strictly a single valid JSON object with EXACTLY this structure:
                 cleaned = cleaned.split("```")[1].split("```")[0].strip()
             return json.loads(cleaned)
         except Exception as e:
+            # Try extracting JSON object from surrounding text
+            try:
+                match = re.search(r'\{.*\}', cleaned, re.DOTALL)
+                if match:
+                    return json.loads(match.group())
+            except Exception:
+                pass
             print(f"Failed to parse LLM JSON: {e}")
             return None
 
@@ -300,7 +287,9 @@ Return strictly a single valid JSON object with EXACTLY this structure:
         file_tree: List[str],
         chunks: List[Any],
         primary_lang: str,
-        languages: Dict[str, int]
+        languages: Dict[str, int],
+        full_name: str = "repository",
+        total_loc: int = 0
     ) -> Dict[str, Any]:
         folders = set()
         for f in file_tree:
@@ -325,10 +314,11 @@ Return strictly a single valid JSON object with EXACTLY this structure:
                 "category": chunk.chunk_type.capitalize(),
                 "file_path": chunk.file_path,
                 "lines": f"L{chunk.start_line} - L{chunk.end_line}",
-                "explanation": chunk.summary or f"{chunk.chunk_type.capitalize()} definition in {chunk.file_path} handling core application execution."
+                "explanation": chunk.summary or f"{chunk.chunk_type.capitalize()} definition in {chunk.file_path}."
             })
 
         return {
+            "summary": f"## Repository Summary: {full_name}\n\nThis is a **{primary_lang}** codebase with **{total_loc:,} lines of code** across **{len(file_tree)} files**.\n\n> AI summary generation is temporarily unavailable. The repository has been indexed and you can use the **Chat** tab to ask specific questions about this codebase.",
             "tech_stack": {
                 "backend": [primary_lang],
                 "frontend": [l for l in languages.keys() if l.lower() in ['typescript', 'javascript', 'html', 'css']],
@@ -344,21 +334,14 @@ Return strictly a single valid JSON object with EXACTLY this structure:
             "architecture": [
                 {
                     "name": "Modular Architecture",
-                    "confidence": 88,
+                    "confidence": 85,
                     "reasoning": f"The codebase is structured into {len(folder_list)} primary module directories separating concerns across {primary_lang} files."
                 }
             ],
             "request_flow": [
-                {
-                    "step": "1. Entry Point Execution",
-                    "layer": "Main Application",
-                    "description": f"Execution begins in primary entry point file ({file_tree[0] if file_tree else 'main'}), initializing runtime components."
-                },
-                {
-                    "step": "2. Business Logic Handler",
-                    "layer": "Core Module",
-                    "description": "Incoming tasks are delegated to module handlers and functions defined across the codebase."
-                }
+                {"step": "1. Entry Point", "layer": "Main Application", "description": f"Execution begins in the primary entry point, initializing the {primary_lang} runtime."},
+                {"step": "2. Business Logic", "layer": "Core Module", "description": "Incoming tasks delegated to module handlers and service functions."},
+                {"step": "3. Response", "layer": "Output", "description": "Results returned to the caller or stored in the persistence layer."}
             ],
             "folder_explanations": folder_explanations,
             "important_components": important_components,
@@ -367,23 +350,11 @@ Return strictly a single valid JSON object with EXACTLY this structure:
                     f"Well-structured directory layout spanning {len(file_tree)} files.",
                     f"Modular code breakdown into {len(chunks)} parsed code chunks."
                 ],
-                "potential_code_smells": [
-                    "Consider adding more inline docstrings to complex functions."
-                ],
-                "duplicate_logic": [
-                    "Ensure utility functions are consolidated in a shared helper module."
-                ],
-                "large_classes": [
-                    f"Top files contain multiple function definitions that could be split into micro-modules."
-                ],
-                "missing_documentation": [
-                    "Some exported modules would benefit from comprehensive API documentation."
-                ],
-                "todo_comments": [
-                    "Review function parameters for type hint coverage."
-                ],
-                "suggested_improvements": [
-                    "Add automated unit tests covering core entry point execution flow."
-                ]
+                "potential_code_smells": ["Consider adding more inline docstrings to complex functions."],
+                "duplicate_logic": ["Ensure utility functions are consolidated in a shared helper module."],
+                "large_classes": ["Top files contain multiple function definitions that could be split into micro-modules."],
+                "missing_documentation": ["Some exported modules would benefit from comprehensive API documentation."],
+                "todo_comments": ["Review function parameters for type hint coverage."],
+                "suggested_improvements": ["Add automated unit tests covering core entry point execution flow."]
             }
         }
