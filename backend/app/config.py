@@ -14,9 +14,14 @@ OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 PRIMARY_MODEL = "google/gemini-2.5-flash"
 FALLBACK_MODEL = "google/gemini-2.0-flash-001"
 
-# Directory where repositories are temporarily cloned
-TEMP_REPOS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "temp_repos")
-os.makedirs(TEMP_REPOS_DIR, exist_ok=True)
+import tempfile
+
+# Directory where repositories are temporarily cloned (uses /tmp on serverless environments)
+TEMP_REPOS_DIR = os.path.join(tempfile.gettempdir(), "temp_repos")
+try:
+    os.makedirs(TEMP_REPOS_DIR, exist_ok=True)
+except Exception:
+    pass
 
 # Sample Repositories for quick exploration
 SAMPLE_REPOSITORIES = [
