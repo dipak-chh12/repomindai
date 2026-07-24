@@ -1,17 +1,28 @@
 import numpy as np
-import faiss
 import re
 import math
 from typing import List, Dict, Any, Tuple
 from app.services.code_parser import CodeChunk
 
+try:
+    import faiss
+    FAISS_AVAILABLE = True
+except Exception as e:
+    print(f"FAISS import failed ({e}), using NumPy cosine similarity fallback.")
+    FAISS_AVAILABLE = False
+
 class VectorService:
     def __init__(self, dimension: int = 256):
         self.dimension = dimension
-        self.index = faiss.IndexFlatIP(self.dimension) # Inner product similarity (normalized vectors = cosine sim)
         self.chunks: List[CodeChunk] = []
         self.vocabulary: Dict[str, int] = {}
         self.idf: Dict[str, float] = {}
+        self.vectors_np: np.ndarray = np.empty((0, self.dimension), dtype=np.float32)
+        if FAISS_AVAILABLE:
+            try:
+                self.index = faiss.IndexFlatIP(self.dimension)
+            except Exception:
+                pass
 
     def _tokenize(self, text: str) -> List[str]:
         """Simple, fast code tokenizer using regex."""
@@ -57,12 +68,12 @@ class VectorService:
         return vec
 
     def index_chunks(self, chunks: List[CodeChunk]):
-        """Build FAISS index from list of code chunks."""
+        """Build vector index from list of code chunks."""
         self.chunks = chunks
         if not chunks:
+            self.vectors_np = np.empty((0, self.dimension), dtype=np.float32)
             return
             
-        # Prepare text representations combining path, names, and content
         documents = []
         for chunk in chunks:
             doc_str = f"{chunk.file_path} {chunk.class_name or ''} {chunk.function_name or ''} {chunk.summary} {chunk.code_content}"
@@ -75,25 +86,43 @@ class VectorService:
             v = self._embed_text(doc)
             vectors.append(v)
             
-        vectors_np = np.array(vectors, dtype=np.float32)
+        self.vectors_np = np.array(vectors, dtype=np.float32)
         
-        # Reset and add to FAISS index
-        self.index = faiss.IndexFlatIP(self.dimension)
-        self.index.add(vectors_np)
+        if FAISS_AVAILABLE:
+            try:
+                self.index = faiss.IndexFlatIP(self.dimension)
+                self.index.add(self.vectors_np)
+            except Exception as e:
+                print(f"FAISS indexing failed: {e}")
 
     def search(self, query: str, top_k: int = 5) -> List[Tuple[CodeChunk, float]]:
         """Search top_k relevant code chunks for a natural language query."""
-        if not self.chunks or self.index.ntotal == 0:
+        if not self.chunks or len(self.vectors_np) == 0:
             return []
 
-        query_vec = self._embed_text(query).reshape(1, -1)
-        distances, indices = self.index.search(query_vec, min(top_k, len(self.chunks)))
+        query_vec = self._embed_text(query)
+
+        # Try FAISS search first
+        if FAISS_AVAILABLE and hasattr(self, 'index') and self.index.ntotal > 0:
+            try:
+                distances, indices = self.index.search(query_vec.reshape(1, -1), min(top_k, len(self.chunks)))
+                results = []
+                for dist, idx in zip(distances[0], indices[0]):
+                    if 0 <= idx < len(self.chunks):
+                        score = float(max(0.0, min(1.0, dist)))
+                        results.append((self.chunks[idx], score))
+                return results
+            except Exception as e:
+                print(f"FAISS search failed ({e}), using NumPy fallback")
+
+        # NumPy Dot Product Cosine Similarity Fallback
+        scores = np.dot(self.vectors_np, query_vec)
+        top_indices = np.argsort(scores)[::-1][:min(top_k, len(self.chunks))]
         
         results = []
-        for dist, idx in zip(distances[0], indices[0]):
-            if idx >= 0 and idx < len(self.chunks):
-                # Cosine similarity score bounded 0 to 1
-                score = float(max(0.0, min(1.0, dist)))
+        for idx in top_indices:
+            if 0 <= idx < len(self.chunks):
+                score = float(max(0.0, min(1.0, scores[idx])))
                 results.append((self.chunks[idx], score))
                 
         return results
