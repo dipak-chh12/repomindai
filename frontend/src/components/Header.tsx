@@ -49,7 +49,7 @@ export const Header: React.FC<HeaderProps> = ({ overview, onReset }) => {
         )}
 
         <a
-          href="https://github.com"
+          href="https://github.com/dipak-chh12/repomindai"
           target="_blank"
           rel="noreferrer"
           className="p-2 bg-neutral-900 hover:bg-neutral-800 text-neutral-400 hover:text-white border border-neutral-800 transition-colors"
