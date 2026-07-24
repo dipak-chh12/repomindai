@@ -17,7 +17,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Include router both with and without /api prefix to handle local dev & Vercel rewrites
 app.include_router(repo_router, prefix="/api")
+app.include_router(repo_router)
 
 @app.get("/")
 def health_check():
