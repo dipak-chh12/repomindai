@@ -5,7 +5,7 @@ import { Search, Loader2, FileCode, ExternalLink, Sparkles, BookOpen, Cpu } from
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-export const SearchTab: React.FC = () => {
+export const SearchTab: React.FC<{ repoUrl?: string }> = ({ repoUrl }) => {
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [aiExplanation, setAiExplanation] = useState<string | null>(null);
@@ -32,7 +32,8 @@ export const SearchTab: React.FC = () => {
     try {
       // Execute AI Code Search using LLM RAG
       const chatResponse = await apiService.chatWithRepo(
-        `Perform an AI Code Search for: "${searchQuery}". Explain the code logic, relevant files, functions, and how they work.`
+        `Perform an AI Code Search for: "${searchQuery}". Explain the code logic, relevant files, functions, and how they work.`,
+        repoUrl
       );
       
       // Clean follow-up questions from search tab explanation

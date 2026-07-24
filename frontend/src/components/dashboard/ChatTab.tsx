@@ -5,7 +5,7 @@ import { MessageSquareText, Send, Loader2, Bot, User, ExternalLink, BookOpen, Sp
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-export const ChatTab: React.FC = () => {
+export const ChatTab: React.FC<{ repoUrl?: string }> = ({ repoUrl }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome',
@@ -32,7 +32,7 @@ export const ChatTab: React.FC = () => {
     setLoading(true);
 
     try {
-      const response = await apiService.chatWithRepo(queryText.trim());
+      const response = await apiService.chatWithRepo(queryText.trim(), repoUrl);
       const assistantMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',

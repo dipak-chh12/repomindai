@@ -14,8 +14,8 @@ from app.services.chat_service import ChatService
 
 router = APIRouter()
 
-# In-memory store: works within a single Lambda invocation's lifetime
-# For stateless Vercel serverless, analyze returns the full report directly
+# Module-level store — valid within a single Lambda invocation
+# (i.e., works if analyze + chat happen in same warm container)
 _store: Dict[str, Any] = {
     "active_repo_url": None,
     "report": None,
@@ -23,23 +23,47 @@ _store: Dict[str, Any] = {
     "chat_service": None,
 }
 
+
 class AnalyzeRequest(BaseModel):
     repo_url: str
+
 
 class SearchRequest(BaseModel):
     query: str
     top_k: Optional[int] = 5
+    repo_url: Optional[str] = None  # if provided, will re-index if no state
+
 
 class ChatRequest(BaseModel):
     question: str
+    repo_url: Optional[str] = None  # if provided, will re-index if no state
+    repo_summary: Optional[str] = ""
+
+
+def _ensure_state(repo_url: str):
+    """Re-run analysis pipeline if current state is for a different (or no) repo."""
+    if _store["chat_service"] and _store["active_repo_url"] == repo_url:
+        return  # already indexed
+
+    task_id = str(uuid.uuid4())[:8]
+    target_dir = os.path.join(TEMP_REPOS_DIR, task_id)
+    git_info = GitService.clone_repository(repo_url, target_dir)
+    parse_results = CodeParser.parse_repository(target_dir, git_info["repo_name"])
+    chunks = parse_results["chunks"]
+    vec_service = VectorService(dimension=256)
+    vec_service.index_chunks(chunks)
+    chat_svc = ChatService(vector_service=vec_service)
+
+    _store["active_repo_url"] = repo_url
+    _store["vector_service"] = vec_service
+    _store["chat_service"] = chat_svc
 
 
 @router.post("/analyze")
 def analyze_repository(req: AnalyzeRequest):
     """
     Synchronously runs the full analysis pipeline and returns the report.
-    Vercel Serverless is stateless across requests, so we run everything in
-    one shot and return the complete result — no polling needed.
+    Also indexes the repo for chat/search use within this Lambda invocation.
     """
     repo_url = req.repo_url.strip()
     if not repo_url:
@@ -49,25 +73,18 @@ def analyze_repository(req: AnalyzeRequest):
     target_dir = os.path.join(TEMP_REPOS_DIR, task_id)
 
     try:
-        # Step 1: Clone / download repository
         git_info = GitService.clone_repository(repo_url, target_dir)
-
-        # Step 2: Parse AST + code chunks
         parse_results = CodeParser.parse_repository(target_dir, git_info["repo_name"])
         chunks = parse_results["chunks"]
 
-        # Step 3: Build vector index
         vec_service = VectorService(dimension=256)
         vec_service.index_chunks(chunks)
 
-        # Step 4: AI architecture analysis
         analyzer = AIAnalyzer()
         report = analyzer.analyze_repository(git_info, parse_results, chunks)
 
-        # Step 5: Initialise chat service
         chat_svc = ChatService(vector_service=vec_service)
 
-        # Cache in module-level store so chat/search work in SAME invocation
         _store["active_repo_url"] = repo_url
         _store["report"] = report
         _store["vector_service"] = vec_service
@@ -90,9 +107,10 @@ def analyze_repository(req: AnalyzeRequest):
 
 @router.get("/status/{task_id}")
 def get_task_status(task_id: str):
-    # With synchronous analysis, status is always returned directly from /analyze
-    # This endpoint exists for backwards-compat but can return 404
-    raise HTTPException(status_code=404, detail="Status polling not needed; use the /analyze response directly.")
+    raise HTTPException(
+        status_code=410,
+        detail="Polling not needed. The /analyze endpoint returns the full report directly."
+    )
 
 
 @router.get("/repository")
@@ -104,12 +122,22 @@ def get_repository_report():
 
 @router.post("/search")
 def search_code(req: SearchRequest):
+    # If repo_url provided and no current state, re-index (slow but correct)
+    if req.repo_url and not _store["chat_service"]:
+        try:
+            _ensure_state(req.repo_url)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to index repo for search: {e}")
+
     if not _store["chat_service"]:
-        raise HTTPException(status_code=400, detail="No active indexed repository. Please analyze a repository first.")
+        raise HTTPException(
+            status_code=400,
+            detail="No active indexed repository. Please analyze a repository first."
+        )
 
     results = _store["chat_service"].search(
         query=req.query,
-        repo_url=_store.get("active_repo_url", "https://github.com/repository"),
+        repo_url=_store.get("active_repo_url", req.repo_url or ""),
         top_k=req.top_k or 5
     )
     return {"query": req.query, "results": results}
@@ -117,16 +145,26 @@ def search_code(req: SearchRequest):
 
 @router.post("/chat")
 def chat_with_repo(req: ChatRequest):
-    if not _store["chat_service"]:
-        raise HTTPException(status_code=400, detail="No active indexed repository. Please analyze a repository first.")
+    # If repo_url provided and no current state, re-index (slower but stateless-safe)
+    if req.repo_url and not _store["chat_service"]:
+        try:
+            _ensure_state(req.repo_url)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to index repo for chat: {e}")
 
-    repo_summary = ""
-    if _store.get("report") and "overview" in _store["report"]:
+    if not _store["chat_service"]:
+        raise HTTPException(
+            status_code=400,
+            detail="No active indexed repository. Please analyze a repository first, or pass 'repo_url' in the request body."
+        )
+
+    repo_summary = req.repo_summary or ""
+    if not repo_summary and _store.get("report") and "overview" in _store["report"]:
         repo_summary = _store["report"]["overview"].get("ai_summary", "")
 
     answer = _store["chat_service"].answer_chat(
         question=req.question,
-        repo_url=_store.get("active_repo_url", "https://github.com/repository"),
+        repo_url=_store.get("active_repo_url", req.repo_url or ""),
         repo_summary=repo_summary
     )
     return answer

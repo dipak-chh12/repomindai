@@ -30,6 +30,7 @@ const ANALYSIS_STAGES = [
 export function App() {
   const [view, setView] = useState<'landing' | 'analyzing' | 'dashboard'>('landing');
   const [activeTab, setActiveTab] = useState<TabType>('overview');
+  const [repoUrl, setRepoUrl] = useState('');
   const [progress, setProgress] = useState(0);
   const [stage, setStage] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -50,21 +51,20 @@ export function App() {
     return () => clearInterval(tick);
   }, [view]);
 
-  const handleStartAnalysis = async (repoUrl: string) => {
+  const handleStartAnalysis = async (url: string) => {
     setView('analyzing');
     setProgress(5);
     setStage('Connecting to backend...');
     setError(null);
     setReport(null);
+    setRepoUrl(url);
 
     try {
-      // Analysis runs synchronously on the backend — full report returned in one call
-      const data = await apiService.analyzeRepo(repoUrl);
+      const data = await apiService.analyzeRepo(url);
       if (data.report) {
         setReport(data.report);
         setProgress(100);
         setStage('Analysis Complete!');
-        // Small delay so user sees 100% before dashboard appears
         setTimeout(() => setView('dashboard'), 800);
       } else {
         throw new Error('Backend returned no report.');
@@ -121,8 +121,8 @@ export function App() {
             {activeTab === 'statistics' && (
               <StatisticsTab stats={report.code_statistics} />
             )}
-            {activeTab === 'search' && <SearchTab />}
-            {activeTab === 'chat' && <ChatTab />}
+            {activeTab === 'search' && <SearchTab repoUrl={repoUrl} />}
+            {activeTab === 'chat' && <ChatTab repoUrl={repoUrl} />}
           </main>
         </div>
       )}

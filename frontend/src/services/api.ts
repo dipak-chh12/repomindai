@@ -43,7 +43,7 @@ export const apiService = {
     return res.json();
   },
 
-  async chatWithRepo(question: string): Promise<{
+  async chatWithRepo(question: string, repoUrl?: string): Promise<{
     answer: string;
     citations: Citation[];
     retrieved_chunks: SearchResultItem[];
@@ -51,7 +51,7 @@ export const apiService = {
     const res = await fetch(`${API_BASE}/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question })
+      body: JSON.stringify({ question, ...(repoUrl ? { repo_url: repoUrl } : {}) })
     });
     if (!res.ok) throw new Error('Chat query failed');
     return res.json();
