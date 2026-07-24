@@ -1,4 +1,4 @@
-import type { RepositoryReport, SearchResultItem, Citation, SampleRepo } from '../types';
+import type { RepositoryReport, SearchResultItem, Citation, SampleRepo, TechStack, ArchitecturePattern, RequestFlowStep, FolderExplanation, ComponentItem, AIInsights } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
@@ -29,12 +29,12 @@ export const apiService = {
 
   async summarizeRepo(repoUrl: string): Promise<{
     summary: string;
-    tech_stack: Record<string, string[]>;
-    architecture: Array<{ name: string; confidence: number; reasoning: string }>;
-    request_flow: Array<{ step: string; layer: string; description: string }>;
-    folder_explanations: Array<{ path: string; explanation: string }>;
-    important_components: Array<{ category: string; file_path: string; lines: string; explanation: string }>;
-    ai_insights: Record<string, string[]>;
+    tech_stack: TechStack;
+    architecture: ArchitecturePattern[];
+    request_flow: RequestFlowStep[];
+    folder_explanations: FolderExplanation[];
+    important_components: ComponentItem[];
+    ai_insights: AIInsights;
   }> {
     const res = await fetch(`${API_BASE}/summarize`, {
       method: 'POST',
