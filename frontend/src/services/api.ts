@@ -3,28 +3,27 @@ import type { RepositoryReport, SearchResultItem, Citation, SampleRepo } from '.
 const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
 export const apiService = {
-  async analyzeRepo(repoUrl: string): Promise<{ task_id: string; message: string }> {
+  async analyzeRepo(repoUrl: string): Promise<{
+    task_id: string;
+    status: string;
+    progress: number;
+    stage: string;
+    report: RepositoryReport;
+    message: string;
+  }> {
     const res = await fetch(`${API_BASE}/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ repo_url: repoUrl })
     });
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: 'Failed to connect to backend server. Make sure backend is running.' }));
-      throw new Error(err.detail || 'Analysis request failed');
+      let msg = 'Failed to connect to backend server. Make sure backend is running.';
+      try {
+        const err = await res.json();
+        msg = err.detail || msg;
+      } catch (_) {}
+      throw new Error(msg);
     }
-    return res.json();
-  },
-
-  async getTaskStatus(taskId: string): Promise<{
-    status: 'queued' | 'processing' | 'completed' | 'failed';
-    progress: number;
-    stage: string;
-    error: string | null;
-    report?: RepositoryReport;
-  }> {
-    const res = await fetch(`${API_BASE}/status/${taskId}`);
-    if (!res.ok) throw new Error('Task status request failed');
     return res.json();
   },
 

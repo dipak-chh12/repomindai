@@ -18,71 +18,65 @@ import { ChatTab } from './components/dashboard/ChatTab';
 import type { RepositoryReport } from './types';
 import { apiService } from './services/api';
 
+const ANALYSIS_STAGES = [
+  { progress: 10, stage: 'Initializing analysis pipeline...' },
+  { progress: 20, stage: 'Cloning repository from GitHub...' },
+  { progress: 40, stage: 'Parsing files, AST trees & functions...' },
+  { progress: 65, stage: 'Generating embeddings & indexing vector store...' },
+  { progress: 85, stage: 'Analyzing architecture, tech stack & code insights...' },
+  { progress: 95, stage: 'Generating AI insights report...' },
+];
+
 export function App() {
   const [view, setView] = useState<'landing' | 'analyzing' | 'dashboard'>('landing');
   const [activeTab, setActiveTab] = useState<TabType>('overview');
-  
-  const [taskId, setTaskId] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [stage, setStage] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<RepositoryReport | null>(null);
 
+  // Animate progress while analysis is running (since backend runs synchronously)
   useEffect(() => {
-    apiService.getRepositoryReport()
-      .then((rep) => {
-        setReport(rep);
-        setView('dashboard');
-      })
-      .catch(() => {
-        setView('landing');
-      });
-  }, []);
-
-  useEffect(() => {
-    if (!taskId || view !== 'analyzing') return;
-
-    const interval = setInterval(async () => {
-      try {
-        const res = await apiService.getTaskStatus(taskId);
-        setProgress(res.progress);
-        setStage(res.stage);
-
-        if (res.status === 'completed' && res.report) {
-          setReport(res.report);
-          setView('dashboard');
-          clearInterval(interval);
-        } else if (res.status === 'failed') {
-          setError(res.error || 'Failed to analyze repository');
-          clearInterval(interval);
-        }
-      } catch (e) {
-        setError('Failed to query status');
-        clearInterval(interval);
+    if (view !== 'analyzing') return;
+    let stageIdx = 0;
+    const tick = setInterval(() => {
+      if (stageIdx < ANALYSIS_STAGES.length) {
+        const s = ANALYSIS_STAGES[stageIdx];
+        setProgress(s.progress);
+        setStage(s.stage);
+        stageIdx++;
       }
-    }, 1200);
-
-    return () => clearInterval(interval);
-  }, [taskId, view]);
+    }, 2200);
+    return () => clearInterval(tick);
+  }, [view]);
 
   const handleStartAnalysis = async (repoUrl: string) => {
     setView('analyzing');
     setProgress(5);
-    setStage('Initializing analysis pipeline...');
+    setStage('Connecting to backend...');
     setError(null);
+    setReport(null);
 
     try {
+      // Analysis runs synchronously on the backend — full report returned in one call
       const data = await apiService.analyzeRepo(repoUrl);
-      setTaskId(data.task_id);
+      if (data.report) {
+        setReport(data.report);
+        setProgress(100);
+        setStage('Analysis Complete!');
+        // Small delay so user sees 100% before dashboard appears
+        setTimeout(() => setView('dashboard'), 800);
+      } else {
+        throw new Error('Backend returned no report.');
+      }
     } catch (err: any) {
-      setError(err.message || 'Failed to start analysis');
+      setError(err.message || 'Failed to analyze repository');
     }
   };
 
   const handleReset = async () => {
     await apiService.resetRepository().catch(() => {});
     setReport(null);
-    setTaskId(null);
     setView('landing');
   };
 
