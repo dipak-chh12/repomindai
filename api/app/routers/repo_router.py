@@ -118,26 +118,57 @@ def analyze_repository(req: AnalyzeRequest):
 @router.post("/summarize")
 def generate_ai_summary(req: AnalyzeRequest):
     """
-    Separate endpoint that generates the AI summary for a repo_url.
-    Called by the frontend AFTER /analyze returns, as a second async fetch.
-    This runs in its own Lambda invocation with the full 60s budget.
+    Fast AI summary endpoint — fetches README + file tree via GitHub API (no clone needed).
+    Runs in its own Lambda invocation giving ~55s purely for the AI call.
     """
+    import httpx as _httpx
+    import re as _re
+
     repo_url = req.repo_url.strip()
     if not repo_url:
         raise HTTPException(status_code=400, detail="Repository URL is required.")
 
-    task_id = str(uuid.uuid4())[:8]
-    target_dir = os.path.join(TEMP_REPOS_DIR, task_id)
+    # Parse owner/repo from URL
+    match = _re.search(r'github\.com/([^/]+)/([^/]+?)(?:\.git)?$', repo_url)
+    if not match:
+        raise HTTPException(status_code=400, detail="Invalid GitHub URL.")
+    owner, repo = match.group(1), match.group(2)
+    full_name = f"{owner}/{repo}"
+
+    readme_content = ""
+    file_tree_text = ""
 
     try:
-        git_info = GitService.clone_repository(repo_url, target_dir)
-        parse_results = CodeParser.parse_repository(target_dir, git_info["repo_name"])
-        chunks = parse_results["chunks"]
-        analyzer = AIAnalyzer()
-        return analyzer.generate_ai_summary(git_info, parse_results, chunks)
+        with _httpx.Client(timeout=15.0, follow_redirects=True) as client:
+            # Fetch README via GitHub raw content
+            for branch in ["main", "master"]:
+                for fname in ["README.md", "readme.md", "README.rst"]:
+                    r = client.get(f"https://raw.githubusercontent.com/{full_name}/{branch}/{fname}")
+                    if r.status_code == 200:
+                        readme_content = r.text[:3000]
+                        break
+                if readme_content:
+                    break
+
+            # Fetch file tree via GitHub API
+            for branch in ["main", "master"]:
+                r = client.get(f"https://api.github.com/repos/{full_name}/git/trees/{branch}?recursive=1",
+                               headers={"Accept": "application/vnd.github.v3+json"})
+                if r.status_code == 200:
+                    data = r.json()
+                    files = [item["path"] for item in data.get("tree", []) if item.get("type") == "blob"]
+                    file_tree_text = "\n".join(files[:60])
+                    break
     except Exception as e:
-        import traceback
-        raise HTTPException(status_code=500, detail=f"{str(e)}\n{traceback.format_exc()}")
+        print(f"GitHub API fetch error: {e}")
+
+    analyzer = AIAnalyzer()
+    return analyzer.generate_ai_summary_from_context(
+        full_name=full_name,
+        readme=readme_content,
+        file_tree_text=file_tree_text
+    )
+
 
 
 @router.get("/status/{task_id}")

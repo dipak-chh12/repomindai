@@ -196,6 +196,85 @@ class AIAnalyzer:
         )
         return result
 
+    def generate_ai_summary_from_context(
+        self,
+        full_name: str,
+        readme: str,
+        file_tree_text: str
+    ) -> Dict[str, Any]:
+        """
+        AI summary using only README + file tree — no cloning required.
+        This is called by /summarize endpoint which fetches content via GitHub API.
+        Budget: ~55s purely for the AI call.
+        """
+        prompt = f"""Analyze the GitHub repository '{full_name}' based on its README and file structure.
+
+README CONTENT:
+{readme or "(no readme found)"}
+
+FILE TREE (sample):
+{file_tree_text or "(no file tree available)"}
+
+Return ONLY this JSON structure (no markdown, no code fences, raw JSON only):
+{{
+  "summary": "A 3-5 paragraph detailed Markdown technical summary. Use ## headers and bullet points. Explain what this project does, its architecture, frameworks, and execution flow. Be specific to THIS codebase.",
+  "tech_stack": {{
+    "backend": ["backend languages/tools"],
+    "frontend": ["frontend frameworks/tools"],
+    "database": ["databases/ORMs"],
+    "frameworks": ["main frameworks"],
+    "libraries": ["key helper libraries"],
+    "testing": ["testing tools"],
+    "devops": ["docker/ci-cd if present"],
+    "ai_libraries": ["ai/ml libraries if any"],
+    "package_managers": ["package managers"],
+    "build_tools": ["build tools"]
+  }},
+  "architecture": [
+    {{"name": "Pattern Name", "confidence": 85, "reasoning": "Why this pattern applies to this specific repo"}}
+  ],
+  "request_flow": [
+    {{"step": "1. Entry Point", "layer": "Client/API", "description": "How requests enter this project"}},
+    {{"step": "2. Processing", "layer": "Service", "description": "How data is processed"}},
+    {{"step": "3. Response", "layer": "Output", "description": "How results are returned"}}
+  ],
+  "folder_explanations": [
+    {{"path": "folder_name", "explanation": "Purpose of this folder in this project"}}
+  ],
+  "important_components": [
+    {{"category": "Core Logic", "file_path": "path/to/file.py", "lines": "L1-L50", "explanation": "What this component does"}}
+  ],
+  "ai_insights": {{
+    "strengths": ["Strength 1", "Strength 2"],
+    "potential_code_smells": ["Issue 1"],
+    "duplicate_logic": ["Observation"],
+    "large_classes": ["Observation"],
+    "missing_documentation": ["Gap 1"],
+    "todo_comments": ["TODO observation"],
+    "suggested_improvements": ["Improvement 1"]
+  }}
+}}"""
+
+        ai_raw = self._call_openrouter(
+            prompt,
+            system_prompt="You are a JSON-generating Staff Software Engineer. Output ONLY raw valid JSON with no markdown formatting or code fences."
+        )
+
+        parsed = self._safe_parse_json(ai_raw)
+        if parsed and "summary" in parsed and "tech_stack" in parsed:
+            return parsed
+
+        # Return a helpful fallback instead of generic text
+        return {
+            "summary": f"## {full_name}\n\nAI summary could not be generated within the time limit. Use the **Chat** tab to ask specific questions about this repository.",
+            "tech_stack": {"backend": [], "frontend": [], "database": [], "frameworks": [], "libraries": [], "testing": [], "devops": [], "ai_libraries": [], "package_managers": [], "build_tools": []},
+            "architecture": [{"name": "Modular Architecture", "confidence": 70, "reasoning": "Based on file structure analysis."}],
+            "request_flow": [{"step": "1. Entry", "layer": "API", "description": "Request enters the application."}],
+            "folder_explanations": [],
+            "important_components": [],
+            "ai_insights": {"strengths": [], "potential_code_smells": [], "duplicate_logic": [], "large_classes": [], "missing_documentation": [], "todo_comments": [], "suggested_improvements": []}
+        }
+
     def _extract_readme_summary(self, target_dir: str) -> str:
         for fname in ["README.md", "readme.md", "README.rst", "README"]:
             path = os.path.join(target_dir, fname)
