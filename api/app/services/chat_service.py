@@ -42,32 +42,35 @@ class ChatService:
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.3,
-            "max_tokens": 4096
+            "max_tokens": 2048
         }
 
         try:
-            with httpx.Client(timeout=30.0) as client:
+            with httpx.Client(timeout=55.0) as client:
                 res = client.post(f"{OPENROUTER_BASE_URL}/chat/completions", headers=headers, json=payload)
                 if res.status_code == 200:
                     data = res.json()
                     return data["choices"][0]["message"]["content"]
                 else:
+                    # Try fallback model
+                    logger.warning(f"Primary model failed ({res.status_code}): {res.text[:300]}")
                     payload["model"] = FALLBACK_MODEL
                     res2 = client.post(f"{OPENROUTER_BASE_URL}/chat/completions", headers=headers, json=payload)
                     if res2.status_code == 200:
                         return res2.json()["choices"][0]["message"]["content"]
                     else:
-                        logger.error(f"OpenRouter Error: {res2.text}")
-                        return "Sorry, I encountered an error generating the response from the AI provider."
+                        err_body = res2.text[:500]
+                        logger.error(f"Both models failed. Last error: {err_body}")
+                        return f"AI provider error ({res2.status_code}): {err_body}"
         except Exception as e:
             logger.error(f"OpenRouter API call exception in ChatService: {e}")
-            return "I encountered an internal error while connecting to the AI provider."
+            return f"Connection error calling AI provider: {str(e)}"
 
     def answer_chat(self, question: str, repo_url: str, repo_summary: str = "") -> Dict[str, Any]:
         logger.info(f"Chat query for {repo_url}: {question}")
         
         try:
-            retrieved = self.vector_service.search(question, top_k=10)
+            retrieved = self.vector_service.search(question, top_k=5)
         except Exception as e:
             logger.error(f"Error retrieving context for chat: {e}")
             retrieved = []

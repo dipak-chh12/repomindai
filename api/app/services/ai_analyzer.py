@@ -27,11 +27,11 @@ class AIAnalyzer:
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.2,
-            "max_tokens": 4096
+            "max_tokens": 3000
         }
 
         try:
-            with httpx.Client(timeout=30.0) as client:
+            with httpx.Client(timeout=55.0) as client:
                 res = client.post(f"{OPENROUTER_BASE_URL}/chat/completions", headers=headers, json=payload)
                 if res.status_code == 200:
                     data = res.json()
