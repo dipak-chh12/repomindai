@@ -1,0 +1,71 @@
+import type { RepositoryReport, SearchResultItem, Citation, SampleRepo } from '../types';
+
+const API_BASE = '/api';
+
+export const apiService = {
+  async analyzeRepo(repoUrl: string): Promise<{ task_id: string; message: string }> {
+    const res = await fetch(`${API_BASE}/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ repo_url: repoUrl })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Failed to start analysis' }));
+      throw new Error(err.detail || 'Analysis request failed');
+    }
+    return res.json();
+  },
+
+  async getTaskStatus(taskId: string): Promise<{
+    status: 'queued' | 'processing' | 'completed' | 'failed';
+    progress: number;
+    stage: string;
+    error: string | null;
+    report?: RepositoryReport;
+  }> {
+    const res = await fetch(`${API_BASE}/status/${taskId}`);
+    if (!res.ok) throw new Error('Task status request failed');
+    return res.json();
+  },
+
+  async getRepositoryReport(): Promise<RepositoryReport> {
+    const res = await fetch(`${API_BASE}/repository`);
+    if (!res.ok) throw new Error('No analyzed repository report found');
+    return res.json();
+  },
+
+  async searchCode(query: string, topK: number = 5): Promise<{ query: string; results: SearchResultItem[] }> {
+    const res = await fetch(`${API_BASE}/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, top_k: topK })
+    });
+    if (!res.ok) throw new Error('Search failed');
+    return res.json();
+  },
+
+  async chatWithRepo(question: string): Promise<{
+    answer: string;
+    citations: Citation[];
+    retrieved_chunks: SearchResultItem[];
+  }> {
+    const res = await fetch(`${API_BASE}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question })
+    });
+    if (!res.ok) throw new Error('Chat query failed');
+    return res.json();
+  },
+
+  async resetRepository(): Promise<void> {
+    await fetch(`${API_BASE}/repository`, { method: 'DELETE' });
+  },
+
+  async getSampleRepos(): Promise<SampleRepo[]> {
+    const res = await fetch(`${API_BASE}/sample-repos`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.samples || [];
+  }
+};
