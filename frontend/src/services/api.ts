@@ -1,6 +1,6 @@
 import type { RepositoryReport, SearchResultItem, Citation, SampleRepo } from '../types';
 
-const API_BASE = '/api';
+const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
 export const apiService = {
   async analyzeRepo(repoUrl: string): Promise<{ task_id: string; message: string }> {
@@ -10,7 +10,7 @@ export const apiService = {
       body: JSON.stringify({ repo_url: repoUrl })
     });
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: 'Failed to start analysis' }));
+      const err = await res.json().catch(() => ({ detail: 'Failed to connect to backend server. Make sure backend is running.' }));
       throw new Error(err.detail || 'Analysis request failed');
     }
     return res.json();
@@ -59,7 +59,7 @@ export const apiService = {
   },
 
   async resetRepository(): Promise<void> {
-    await fetch(`${API_BASE}/repository`, { method: 'DELETE' });
+    await fetch(`${API_BASE}/repository`, { method: 'DELETE' }).catch(() => {});
   },
 
   async getSampleRepos(): Promise<SampleRepo[]> {

@@ -2,6 +2,9 @@ import os
 import shutil
 import git
 import re
+import zipfile
+import io
+import httpx
 from typing import Dict, Any
 
 class GitService:
@@ -9,8 +12,6 @@ class GitService:
     def parse_repo_url(repo_url: str) -> Dict[str, str]:
         """Extract owner and repo name from GitHub URL or shorthand owner/repo."""
         clean_url = repo_url.strip().rstrip('/')
-        if not clean_url.endswith('.git'):
-            pass
         
         # Match github.com/owner/repo or owner/repo
         match = re.search(r'github\.com/([^/]+)/([^/]+?)(?:\.git)?$', clean_url)
@@ -28,24 +29,51 @@ class GitService:
 
     @staticmethod
     def clone_repository(repo_url: str, target_dir: str) -> Dict[str, Any]:
-        """Clone a GitHub repository to target_dir and gather basic metrics."""
+        """Clone a GitHub repository to target_dir using GitPython or HTTP Zip fallback."""
         if os.path.exists(target_dir):
             shutil.rmtree(target_dir, ignore_errors=True)
             
         repo_info = GitService.parse_repo_url(repo_url)
-        
-        # Ensure target dir exists
         os.makedirs(target_dir, exist_ok=True)
         
-        # Clone using GitPython
         git_url = f"https://github.com/{repo_info['full_name']}.git" if not repo_url.startswith("http") else repo_url
         
+        cloned_successfully = False
+        
+        # 1. Try GitPython clone
         try:
             repo = git.Repo.clone_from(git_url, target_dir, depth=1)
-            commits_count = 1
+            cloned_successfully = True
         except Exception as e:
-            # Fallback if git clone fails, create directory structure or raise
-            raise Exception(f"Failed to clone repository {repo_url}: {str(e)}")
+            print(f"GitPython clone failed ({e}), falling back to HTTP zip download...")
+
+        # 2. HTTP Zip Archive Fallback if git binary missing or failed
+        if not cloned_successfully:
+            for branch in ["main", "master"]:
+                zip_url = f"https://github.com/{repo_info['full_name']}/archive/refs/heads/{branch}.zip"
+                try:
+                    with httpx.Client(follow_redirects=True, timeout=20.0) as client:
+                        resp = client.get(zip_url)
+                        if resp.status_code == 200:
+                            with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+                                # Extract zip contents
+                                z.extractall(target_dir)
+                                
+                                # Move extracted nested folder contents up to target_dir
+                                subdirs = [os.path.join(target_dir, d) for d in os.listdir(target_dir) if os.path.isdir(os.path.join(target_dir, d))]
+                                if subdirs:
+                                    nested_dir = subdirs[0]
+                                    for item in os.listdir(nested_dir):
+                                        shutil.move(os.path.join(nested_dir, item), os.path.join(target_dir, item))
+                                    shutil.rmtree(nested_dir, ignore_errors=True)
+                                    
+                            cloned_successfully = True
+                            break
+                except Exception as zip_err:
+                    print(f"Zip download failed for {branch}: {zip_err}")
+
+        if not cloned_successfully:
+            raise Exception(f"Unable to download repository '{repo_info['full_name']}'. Please check the URL and visibility.")
             
         # Calculate stats
         total_files = 0
